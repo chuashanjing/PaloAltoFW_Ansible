@@ -1,0 +1,4 @@
+
+[palo]
+PALO-1 ansible_host=<paloalto ip address>
+PALO-1 ansible_user=<palo alto admin account username>

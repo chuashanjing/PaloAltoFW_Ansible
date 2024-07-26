@@ -1,0 +1,115 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+ 
+
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    - name: Ensure secure URL filtering is enabled for all security policies allowing traffic to the Internet
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules
+        cmd: 'set'
+        element: |
+          <entry name="URL Filtering Security Rule">
+            <to>
+              <member>any</member>
+            </to>
+            <from>
+              <member>any</member>
+            </from>
+            <source>
+              <member>any</member>
+            </source>
+            <destination>
+              <member>any</member>
+            </destination>
+            <category>
+              <member>any</member>
+            </category>
+            <application>
+              <member>any</member>
+            </application>
+            <service>
+              <member>application-default</member>
+            </service>
+            <source-hip>
+              <member>any</member>
+            </source-hip>
+            <destination-hip>
+              <member>any</member>
+            </destination-hip>
+            <action>allow</action>
+            <profile-setting>
+              <profiles>
+                <url-filtering>
+                  <member>URLFilteringProfile</member>
+                </url-filtering>
+              </profiles>
+            </profile-setting>
+          </entry>
+
+    - name: before
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules
+        cmd: 'show'
+      register: before
+      ignore_errors: yes
+
+    - name: Commit configuration
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+
+    - name: after
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules
+        cmd: 'show'
+      register: after
+
+    - debug: msg="URL filtering is enabled successfully"
+      when: before != after
+
+    - debug: msg="No changes made"
+      when: before == after
+...

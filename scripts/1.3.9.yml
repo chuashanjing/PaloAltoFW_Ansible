@@ -1,0 +1,66 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+ 
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    - name: Ensure 'Prevent Password Reuse Limit' is greater than or equal to 24
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/mgt-config/password-complexity
+        element: '<password-history-count>24</password-history-count>'
+
+    - name: Check configuration
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/mgt-config/password-complexity
+        cmd: 'show'
+      register: passreuse
+
+    - name: Commit configuration
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+
+    - name: Check configuration
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/mgt-config/password-complexity
+        cmd: 'show'
+      register: passreuse2
+
+    - debug: msg="New Password Reuse Limit is configured successfully"
+      when: passreuse != passreuse2
+
+    - debug: msg="No changes made"
+      when: passreuse == passreuse2
+...

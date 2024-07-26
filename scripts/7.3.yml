@@ -1,0 +1,122 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+ 
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    - name: Create Dynamic List since mine is empty
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /external-list/entry[@name='Palo Alto Networks-Known malicious IP addresses']
+        element: |
+          <type>
+            <ip>
+              <recurring>
+                <five-minute/>
+              </recurring>
+              <url>https://github.com/romainmarcoux/malicious-ip/blob/main/full-40k.txt</url>
+            </ip>
+          </type>
+
+    - name: Deny to Malicious IP
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='Deny to Malicious IP']
+        cmd: 'set'
+        element: |
+          <to><member>any</member></to>
+          <from><member>any</member></from>
+          <source><member>any</member></source>
+          <destination><member>Palo Alto Networks-Known malicious IP addresses</member></destination>
+          <source-user><member>any</member></source-user>
+          <category><member>any</member></category>
+          <application><member>any</member></application>
+          <service><member>any</member></service>
+          <action>drop</action>
+
+    - name: Deny from Malicious IP
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='Deny from Malicious IP']
+        cmd: 'set'
+        element: |
+          <to><member>any</member></to>
+          <from><member>any</member></from>
+          <source><member>Palo Alto Networks-Known malicious IP addresses</member></source>
+          <destination><member>any</member></destination>
+          <source-user><member>any</member></source-user>
+          <category><member>any</member></category>
+          <application><member>any</member></application>
+          <service><member>any</member></service>
+          <action>drop</action>
+
+    - name: before
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules
+        cmd: 'show'
+      register: before
+      ignore_errors: yes
+
+    - name: Commit configuration
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+
+    - name: after
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules
+        cmd: 'show'
+      register: after
+
+    - debug: msg="Security Policy denying any ip address on trusted threat intelligence sources configured successfully"
+      when: before != after
+
+    - debug: msg="No changes made"
+      when: before == after
+...

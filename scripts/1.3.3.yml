@@ -1,0 +1,67 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+ 
+
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    - name: Ensure 'Minimum Uppercase Letters' is greater than or equal to 1
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/mgt-config/password-complexity
+        element: '<minimum-uppercase-letters>1</minimum-uppercase-letters>'
+
+    - name: Check configuration
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/mgt-config/password-complexity
+        cmd: 'show'
+      register: min_upp
+
+    - name: Commit configuration
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+
+    - name: Check configuration
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/mgt-config/password-complexity
+        cmd: 'show'
+      register: min_upp2
+
+    - debug: msg="Minimum uppercase letters is configured successfully"
+      when: min_upp != min_upp2
+
+    - debug: msg="No changes made"
+      when: min_upp == min_upp2
+...

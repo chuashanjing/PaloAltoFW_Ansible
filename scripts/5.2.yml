@@ -1,0 +1,93 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+
+
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    - name: >
+        Ensure forwarding is enabled for all applications and file types
+        in WildFire file blocking profiles
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/file-blocking/entry[@name='File Blocking']
+        element: |
+          <rules>
+            <entry name="Block">
+              <application>
+                <member>any</member>
+              </application>
+              <file-type>
+                <member>any</member>
+              </file-type>
+              <direction>both</direction>
+              <action>continue</action>
+            </entry>
+          </rules>
+    
+    - name: Before
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/file-blocking
+        cmd: 'show'
+      register: before
+      ignore_errors: yes
+
+    - name: Commit configuration
+      panos_commit_firewall:
+        provider: "{{ provider }}"
+
+    - name: After
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/file-blocking
+        cmd: 'show'
+      register: after
+
+    - debug: msg="{{ after }}"
+
+    - debug: msg="Wildfire upload size are configured succesfully"
+      when: before != after
+
+    - debug: msg="No changes made"
+      when: before == after
+...

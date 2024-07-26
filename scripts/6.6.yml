@@ -1,0 +1,107 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+  
+
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    - name: >
+        Ensure a Vulnerability Protection Profile is set to block attacks
+        against critical and high vulnerabilities,
+        and set to default on medium, low and informational vulnerabilties
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/vulnerability/entry[@name='VulnerabilityProtectionProfile']
+        cmd: 'set'
+        element: |
+          <rules>
+            <entry name="critcal and high">
+              <action><drop/></action>
+              <vendor-id><member>any</member></vendor-id>
+              <severity><member>critical</member><member>high</member></severity>
+              <cve><member>any</member></cve>
+              <threat-name>any</threat-name>
+              <host>any</host>
+              <category>any</category>
+              <packet-capture>disable</packet-capture>
+            </entry>
+            <entry name="medium, low and informational">
+              <action><default/></action>
+              <vendor-id><member>any</member></vendor-id>
+              <severity>
+                <member>medium</member>
+                <member>low</member>
+                <member>informational</member>
+              </severity>
+              <cve><member>any</member></cve>
+              <threat-name>any</threat-name>
+              <host>any</host>
+              <category>any</category>
+              <packet-capture>disable</packet-capture>
+            </entry>
+          </rules>
+
+    - name: before
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/vulnerability
+        cmd: 'show'
+      register: before
+      ignore_errors: yes
+
+    - name: Commit configuration
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+
+    - name: after
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/vulnerability
+        cmd: 'show'
+      register: after
+
+    - debug: msg="Configured vulnerability protection profile successfully"
+      when: before != after
+
+    - debug: msg="No changes made"
+      when: before == after
+...

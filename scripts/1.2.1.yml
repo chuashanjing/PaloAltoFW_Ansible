@@ -1,0 +1,156 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    # Ensure 'Permited IP Addresses' is set to those necessary for device management
+    - name: Check for existing ips
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/permitted-ip
+        cmd: 'show'
+      register: output
+      ignore_errors: yes
+
+    - name: List the IPs or ERROR
+      debug: msg="{{ output }}"
+      ignore_errors: yes
+
+    - name: Create IP
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system
+        cmd: 'set'
+        element: |
+          <permitted-ip>
+            <entry name="142.168.101.71"/>
+            <entry name="122.168.123.110"/>
+            <entry name="112.28.254.133"/>
+            <entry name="122.28.254.129"/>
+            <entry name="182.28.254.134"/>
+            <entry name="12.28.254.130"/>
+            <entry name="14.28.210.48"/>
+            <entry name="13.28.230.70"/>
+            <entry name="12.18.210.73"/>
+          </permitted-ip>
+      when: output.msg == "No such node"
+      ignore_errors: yes
+
+#THIS HAVE TO BE HERE SINCE ANSIBLE_FACTS WILL APPEAR ON THE FIRST ONE MAKING IT IMPOSSIBLE TO MATCH
+# BY CREATING IT MAKES IT THE SAME FOR COMPARISON
+    - name: Check for existing ips again for actual comparison
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/permitted-ip
+        cmd: 'show'
+      register: outputs
+      ignore_errors: yes
+
+    - debug: msg="{{ outputs }}"
+
+    - name: Show service
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system
+        cmd: 'show'
+      register: service
+      
+
+    - name: Set protocol
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system
+        cmd: 'set'
+        element: |
+          <service>
+            <disable-telnet>yes</disable-telnet>
+            <disable-http>yes</disable-http>
+            <disable-https>no</disable-https>
+            <disable-ssh>no</disable-ssh>
+            <disable-icmp>yes</disable-icmp>
+            <disable-http-ocsp>yes</disable-http-ocsp>
+            <disable-snmp>yes</disable-snmp>
+            <disable-userid-service>yes</disable-userid-service>
+            <disable-userid-syslog-listener-ssl>yes</disable-userid-syslog-listener-ssl>
+            <disable-userid-syslog-listener-udp>yes</disable-userid-syslog-listener-udp>
+          </service>
+
+
+
+    - name: Commit
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+
+
+    - name: Check for existing ips
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/permitted-ip
+        cmd: 'show'
+      register: output2
+      ignore_errors: yes
+
+    - debug: msg="{{ output2 }}"
+
+    - name: Check permitted-ip changes
+      debug: msg="Permitted IP created successfully"
+      when: outputs != output2
+
+    - name: Check permitted-ip changes
+      debug: msg="No changes made"
+      when: outputs == output2
+
+    - name: Show service
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system
+        cmd: 'show'
+      register: service2
+
+    - name: Check service changes
+      debug: msg="Modified services successfully to allow only HTTPS and SSH"
+      when: service != service2
+
+    - name: Check service changes
+      debug: msg="No changes made"
+      when: service == service2
+...

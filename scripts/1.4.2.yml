@@ -1,0 +1,88 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+
+
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    - name: Ensure 'Failed Attempts' and 'Lockout Time' for Authentication Profile are properly configured
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/authentication-profile/entry[@name='Authentication Profile']
+        element: |
+          <method><local-database/></method>
+          <allow-list>
+            <member>all</member>
+          </allow-list>
+          <lockout>
+            <lockout-time>60</lockout-time>
+            <failed-attempts>10</failed-attempts>
+          </lockout>
+    
+    - name: Configuration
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/authentication-profile
+        cmd: 'show'
+      register: authentication
+      ignore_errors: yes
+
+    - debug: msg="{{ authentication.stdout }}"
+      ignore_errors: yes
+
+    - name: Commit configuration
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+
+
+    - name: Configuration
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/authentication-profile
+        cmd: 'show'
+      register: authentication2
+
+    - debug: msg="{{ authentication2.stdout }}"
+
+
+    - name: Success
+      debug: msg="Successfully configured authentication profile"
+      when: authentication != authentication2
+
+    - name: Failure
+      debug: msg="No changes made"
+      when: authentication == authentication2
+...

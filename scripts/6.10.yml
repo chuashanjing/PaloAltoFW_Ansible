@@ -1,0 +1,152 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+ 
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    - name: Ensure that access to every URL is logged
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/url-filtering/entry[@name='URLFilteringProfile']
+        cmd: 'set'
+        element: |
+          <alert>
+            <member>abortion</member>
+            <member>abused-drugs</member>
+            <member>adult</member>
+            <member>alcohol-and-tobacco</member>
+            <member>auctions</member>
+            <member>business-and-economy</member>
+            <member>command-and-control</member>
+            <member>computer-and-internet-info</member>
+            <member>content-delivery-networks</member>
+            <member>copyright-infringement</member>
+            <member>cryptocurrency</member>
+            <member>dating</member>
+            <member>dynamic-dns</member>
+            <member>educational-institutions</member>
+            <member>entertainment-and-arts</member>
+            <member>extremism</member>
+            <member>financial-services</member>
+            <member>gambling</member>
+            <member>games</member>
+            <member>government</member>
+            <member>grayware</member>
+            <member>hacking</member>
+            <member>health-and-medicine</member>
+            <member>high-risk</member>
+            <member>home-and-garden</member>
+            <member>hunting-and-fishing</member>
+            <member>insufficient-content</member>
+            <member>internet-communications-and-telephony</member>
+            <member>internet-portals</member>
+            <member>job-search</member>
+            <member>legal</member>
+            <member>low-risk</member>
+            <member>malware</member>
+            <member>medium-risk</member>
+            <member>military</member>
+            <member>motor-vehicles</member>
+            <member>music</member>
+            <member>newly-registered-domain</member>
+            <member>news</member>
+            <member>not-resolved</member>
+            <member>nudity</member>
+            <member>online-storage-and-backup</member>
+            <member>parked</member>
+            <member>peer-to-peer</member>
+            <member>personal-sites-and-blogs</member>
+            <member>philosophy-and-political-advocacy</member>
+            <member>phishing</member>
+            <member>private-ip-addresses</member>
+            <member>proxy-avoidance-and-anonymizers</member>
+            <member>questionable</member>
+            <member>real-estate</member>
+            <member>real-time-detection</member>
+            <member>recreation-and-hobbies</member>
+            <member>reference-and-research</member>
+            <member>religion</member>
+            <member>search-engines</member>
+            <member>sex-education</member>
+            <member>shareware-and-freeware</member>
+            <member>shopping</member>
+            <member>social-networking</member>
+            <member>society</member>
+            <member>sports</member>
+            <member>stock-advice-and-tools</member>
+            <member>streaming-media</member>
+            <member>swimsuits-and-intimate-apparel</member>
+            <member>training-and-tools</member>
+            <member>translation</member>
+            <member>travel</member>
+            <member>unknown</member>
+            <member>weapons</member>
+            <member>web-advertisements</member>
+            <member>web-based-email</member>
+            <member>web-hosting</member>
+          </alert>
+    
+    - name: before
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/url-filtering
+        cmd: 'show'
+      register: before
+      ignore_errors: yes
+
+    - name: Commit configuration
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+
+    - name: after
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/url-filtering
+        cmd: 'show'
+      register: after
+
+    - debug: msg="Access to URL is logged successfully"
+      when: before != after
+
+    - debug: msg="No changes made"
+      when: before == after
+...

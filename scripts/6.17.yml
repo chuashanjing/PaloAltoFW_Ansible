@@ -1,0 +1,101 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+ 
+
+  tasks:
+  
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user }}"
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+    - name: >
+        Ensure that all zones have Zone Protection Profiles with all
+        Reconnaissance Protection settings enabled, tuned, and set to
+        appropriate actions
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /network/profiles/zone-protection-profile/entry[@name='ZoneProtection']
+        cmd: 'set'
+        element: |
+          <scan>
+            <entry name="8001">
+              <action>
+                <block-ip>
+                  <track-by>source</track-by>
+                  <duration>1</duration>
+                </block-ip>
+              </action>
+              <interval>5</interval>
+              <threshold>20</threshold>
+            </entry>
+            <entry name="8002">
+              <action><block/></action>
+              <interval>10</interval>
+              <threshold>30</threshold>
+            </entry>
+            <entry name="8003">
+              <action><alert/></action>
+              <interval>10</interval>
+              <threshold>20</threshold>
+            </entry>
+          </scan>
+
+    - name: before
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /network/profiles/zone-protection-profile
+        cmd: 'show'
+      register: before
+      ignore_errors: yes
+
+    - name: Commit configuration
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+
+    - name: after
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /network/profiles/zone-protection-profile
+        cmd: 'show'
+      register: after
+      ignore_errors: yes
+
+    - debug: msg="Reconnaissance protection are configured successfully"
+      when: before != after
+
+    - debug: msg="No changes made"
+      when: before == after
+...

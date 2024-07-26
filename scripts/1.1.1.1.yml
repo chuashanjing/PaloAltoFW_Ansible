@@ -1,0 +1,171 @@
+---
+- name: Palo Alto Playbook
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+  - paloaltonetworks.panos
+  - cyberark.pas
+
+  
+
+  tasks:
+
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set ansible_password to remote node
+      ansible.builtin.set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}" #ansible_host and ansible_user can be 
+          ansible_user: "{{ ansible_user }}" #configured in host txt file
+          ansible_password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+###CREATE SYSLOG PROFILE
+    - name: Create syslog profile
+      panos_syslog_server:
+        provider: '{{ provider }}'
+        syslog_profile: 'Syslog Server Profile'
+        name: 'Server Name'
+        server: 'IPorFQDN.com'
+        transport: 'TCP'
+        syslog_port: 514
+        format: 'BSD'
+        facility: 'LOG_USER'
+
+###SHOW SYSLOG USED FOR COMPARISON
+    - name: Show syslogs
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings/syslog
+        cmd: 'show'
+      register: syslog
+      ignore_errors: yes
+
+    - debug: msg="{{ syslog.stdout }}"
+      ignore_errors: yes
+
+### CREATING PROFILES
+
+    - name: System Profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings/system/match-list/entry[@name='System Log']
+        cmd: 'set'
+        element:
+          <send-syslog><member>Syslog Server Profile</member></send-syslog>
+          <filter>All Logs</filter>
+
+    - name: Configuration Profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings/config/match-list/entry[@name='Configuration Log']
+        cmd: 'set'
+        element:
+          <send-syslog><member>Syslog Server Profile</member></send-syslog>
+          <filter>All Logs</filter>
+    
+    - name: UserID Profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings/userid/match-list/entry[@name='UserID Log']
+        cmd: 'set'
+        element:
+          <send-syslog><member>Syslog Server Profile</member></send-syslog>
+          <filter>All Logs</filter>
+
+    - name: HIP-Match Profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings/hipmatch/match-list/entry[@name='HIP-Match Log']
+        cmd: 'set'
+        element:
+          <send-syslog><member>Syslog Server Profile</member></send-syslog>
+          <filter>All Logs</filter>
+      
+    - name: IP-Tag Profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings/iptag/match-list/entry[@name='IP-Tag Log']
+        cmd: 'set'
+        element:
+          <send-syslog><member>Syslog Server Profile</member></send-syslog>
+          <filter>All Logs</filter>
+
+    - name: Show syslogs
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings
+        cmd: 'show'
+      register: logsettings
+      ignore_errors: yes
+
+    - debug: msg="{{ logsettings.stdout }}"
+      ignore_errors: yes
+
+    - name: Commit
+      panos_commit_firewall:
+        provider: '{{ provider }}'
+      ignore_errors: yes
+
+
+##COMPARING SYSLOGS
+    - name: Show syslogs
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings/syslog
+        cmd: 'show'
+      register: syslogs
+
+    - debug: msg="{{ syslogs }}"
+      
+    - name: Successfully created a syslog profile
+      debug: msg="Successfully created a syslog profile"
+      when: syslogs != syslog
+
+    - name: No change made to syslog
+      debug: msg="No change made to syslog"
+      when: syslogs == syslog
+
+###COMPARING LOGSETTINGS
+    - name: Show syslogs
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings
+        cmd: 'show'
+      register: logsettings2
+
+    - debug: msg="{{ logsettings2.stdout }}"
+
+    - name: Successfully created a syslog profile
+      debug: msg="Successfully configured Log Settings"
+      when: logsettings != logsettings2
+
+    - name: No change made to syslog
+      debug: msg="No change made to Log Settings"
+      when: logsettings == logsettings2
+    
+...
