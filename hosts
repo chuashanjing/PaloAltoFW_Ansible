@@ -1,0 +1,5 @@
+[palo]
+PALO-1 ansible_host='palo_alto_firewall_ip_address'
+PALO-1 ansible_user='superuser_username'
+#PALO-1 ansible_password='palo_alto_admin_password'
+#PALO-1 ansible_password='password_thiscanberemoved_if_you_use_cyberark'
