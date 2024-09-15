@@ -1,0 +1,2163 @@
+---
+- name: Verification
+  hosts: palo
+  gather_facts: false
+  connection: local
+
+  collections:
+    - paloaltonetworks.panos
+    - cyberark.pas
+
+  tasks:
+    - name: credential retrieval
+      cyberark.pas.cyberark_credential:
+        api_base_url: "<https://cyberark.example.com>"
+        validate_certs: "false"
+        app_id: "<ansible>"
+        aim_object: "<target_system_object_name>"
+        reason: "requesting credential for ansible deployment"
+        connection_timeout: 60
+        query: "Safe=test;UserName=admin"
+        query_format: "Exact"
+        fail_request_on_password_change: True
+      register: ca_cred
+      delegate_to: localhost
+      no_log: true
+
+    - name: set ansible pass to remote node
+      set_fact:
+        provider:
+          ip_address: "{{ ansible_host }}"
+          username: "{{ ansible_user }}"
+          password: "{{ ca_cred.result.Content }}"
+      no_log: true
+
+
+    - name: 1.1.1.1 - Show Log settings
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/shared/log-settings
+        cmd: 'show'
+      register: logsetting
+      ignore_errors: true
+
+    - name: 1.1.1.1 - logsetting to json
+      set_fact:
+        logsettingstdout: "{{ (logsetting.stdout | trim | from_json) if logsetting.stdout is string else logsetting.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ logsettingstdout['log-settings'] }}"
+      ignore_errors: true
+
+    - name: 1.1.1.1 - Set expected logging configuration
+      set_fact:
+        expected_logconfig:
+          config:
+            match-list:
+              entry:
+                "@name": "Configuration Log"
+                filter: "All Logs"
+                send-syslog:
+                  member: "Syslog Server Profile"
+          hipmatch:
+            match-list:
+              entry:
+                "@name": "HIP-Match Log"
+                filter: "All Logs"
+                send-syslog:
+                  member: "Syslog Server Profile"
+          iptag:
+            match-list:
+              entry:
+                "@name": "IP-Tag Log"
+                filter: "All Logs"
+                send-syslog:
+                  member: "Syslog Server Profile"
+          syslog:
+            entry:
+              "@name": "Syslog Server Profile"
+              server:
+                entry:
+                  "@name": "Server Name"
+                  facility: "LOG_USER"
+                  format: "BSD"
+                  port: "514"
+                  server: "IPorFQDN.com"
+                  transport: "TCP"
+          system:
+            match-list:
+              entry:
+                "@name": "System Log"
+                filter: "All Logs"
+                send-syslog:
+                  member: "Syslog Server Profile"
+          userid:
+            match-list:
+              entry:
+                "@name": "UserID Log"
+                filter: "All Logs"
+                send-syslog:
+                  member: "Syslog Server Profile" 
+
+    - name: 1.1.1.1 - expected and actual log settings comparison
+      debug: 
+        msg: "{{ expected_logconfig == logsettingstdout['log-settings'] }}" 
+      register: logcomparison
+      ignore_errors: true
+
+    - debug: msg="{{ logcomparison }}"
+
+    - name: 1.1.1.1 - Verify that syslog logging should be configured
+      debug:
+        msg: >
+          {{
+          '1.1.1.1 - Syslog logging should be configured is COMPLIED' if
+          (
+            logsetting.failed == false and
+            logcomparison.failed == false and
+            logcomparison.msg == true
+          )
+          else '1.1.1.1 - Syslog logging should be configured is NOT COMPLIED!!!'
+          }}
+
+
+    - name: 1.1.1.3 - Configure Login Banner
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        cmd: 'show'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system
+      register: login_banner
+
+    - name: Print the login banner
+      debug:
+        var: login_banner
+
+    - name: 1.1.1.3 Debug - Verify login banner
+      debug:
+        msg: "1.1.1.3 - Ensure Login Banner is set is {{ 'COMPLIED' if 'Unauthorised access strictly prohibited' in login_banner.stdout else 'NOT COMPLIED!!!' }}"
+
+
+    - name: 1.1.3 - Enable Logon High DP Load Box
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        cmd: 'show'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/setting/management
+      register: high_dp
+
+    - name: Print High DP Load Box
+      debug:
+        var: high_dp
+
+    - name: 1.1.3 Debug - Verify Logon High DP Load Box
+      debug:
+        msg: "1.1.3 - Enable Logon High DP Load Box is enabled is {{ 'COMPLIED' if '<enable-log-high-dp-load>yes</enable-log-high-dp-load>' in high_dp.stdout_xml else 'NOT COMPLIED!!!' }}"
+
+
+
+
+    - name: 1.2.1 - Ensure Permitted IP
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        cmd: 'show'
+        xpath: /config/devices/entry[@name='localhost.localdomain']/deviceconfig/system
+      register: permitted_ip
+
+    - name: 1.2.1 - Print permitted ip
+      debug:
+        var: permitted_ip.stdout
+
+    - name: 1.2.1 - service to json
+      set_fact:
+        permitted_ip_data: "{{ (permitted_ip.stdout | trim | from_json) if permitted_ip.stdout is string else permitted_ip.stdout }}"
+      ignore_errors: yes
+
+    
+
+    - name: 1.2.1 - IP address
+      set_fact:
+        expected_ip:
+        - "@name": "<ip-address>"
+        - "@name": "<ip-address>"
+        expected_service:
+          "disable-ssh": "no"
+          "disable-https": "no"
+        actual_iplist: "{{ permitted_ip_data['system']['permitted-ip']['entry'] }}"
+        actual_servicelist: "{{ permitted_ip_data['system']['service'] }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ actual_iplist }}"
+      ignore_errors: yes
+    
+    - debug: msg="{{ actual_servicelist }}"
+      ignore_errors: yes
+
+   
+    - name: 1.2.1 - Determine if interface management match
+      debug:
+        msg: "Compliance check for interface management: {{ expected_ip | difference(actual_iplist) | length == 0 }}"
+      register: trueORfalse
+      ignore_errors: yes
+
+    - name: 1.2.1 - Determine if interface management match
+      debug:
+        msg: "Compliance check for interface management: {{ expected_service | difference(actual_servicelist) | length == 0 }}"
+      register: trueORfalse2
+      ignore_errors: yes
+
+    - name: 1.2.1 Debug - Ensure Permitted IP address is set for all network profiles where SSH, HTTPS or SNMP is enabled.
+      debug:
+        msg: 1.2.1 - Ensure Permitted IP address is set for management profiles is {{ 'COMPLIED' if ('True' in trueORfalse.msg) and ('True' in trueORfalse2.msg) else 'NOT COMPLIED!!!' }}
+      ignore_errors: yes
+
+
+
+
+
+    - name: 1.2.2 - Show interface management
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        cmd: 'show'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /network/profiles/interface-management-profile
+      register: intmgt
+      ignore_errors: yes
+
+    - debug: msg="{{ intmgt.stdout }}"
+      ignore_errors: yes
+
+    - name: 1.2.2 - Interface Management to json
+      set_fact:
+        interface_mgmt: "{{ (intmgt.stdout | trim | from_json) if intmgt.stdout is string else intmgt.stdout }}"
+      ignore_errors: yes
+
+    - name: 1.2.2 - Parsed permit IPs
+      debug:
+        var: interface_mgmt
+      ignore_errors: yes
+
+    - name: 1.2.2 - Map Interface Management
+      set_fact:
+        expected_interface:
+          "@name": "Interface Profile"
+          "https": "yes"
+          "permitted-ip":
+            "entry":
+              - "@name": "<ip-address>"
+              - "@name": "<ip-address>"
+              - "@name": "<ip-address>"
+          "ssh": "yes"
+          "snmp": "yes"
+        actual_list: "{{ interface_mgmt['interface-management-profile']['entry'] }}"
+      ignore_errors: yes
+
+    - name: 1.2.2 - Print Interface
+      debug:
+        var: actual_list
+      ignore_errors: yes
+
+    - name: 1.2.2 - Determine if interface management match
+      debug:
+        msg: "Compliance check for interface management: {{ expected_interface | difference(actual_list) | length == 0 }}"
+      register: trueORfalse
+      ignore_errors: yes
+
+    - name: 1.2.2 Debug - Ensure Permitted IP address is set for all network profiles where SSH, HTTPS or SNMP is enabled.
+      debug:
+        msg: 1.2.2 - Ensure Permitted IP address is set for management profiles is {{ 'COMPLIED' if 'True' in trueORfalse.msg else 'NOT COMPLIED!!!' }}
+      ignore_errors: yes
+
+
+
+
+
+    - name: 1.2.3 - Ensure HTTP and Telnet are disabled
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        cmd: 'show'
+        xpath: /config/devices/entry[@name='localhost.localdomain']/deviceconfig/system
+      register: services
+
+    - name: 1.2.3 - Print permitted ip
+      debug:
+        var: services.stdout
+
+    - name: 1.2.3 - service to json
+      set_fact:
+        interface_mgmt: "{{ (services.stdout | trim | from_json) if services.stdout is string else services.stdout }}"
+      ignore_errors: yes
+
+    - name: 1.2.3 - Parsed services
+      debug:
+        var: interface_mgmt
+      ignore_errors: yes
+
+    - name: 1.2.3 - Map service
+      set_fact:
+        actual_services: "{{ interface_mgmt['system']['service'] }}"
+
+    - name: " 1.2.3 - Check if both 'telnet': 'yes' and 'http': 'yes' exist in the actual_list"
+      set_fact:
+        complied: "{{ (actual_services['disable-telnet'] == 'yes') and (actual_services['disable-http'] == 'yes') }}"
+
+    - name: 1.2.3 - Ensure HTTP and Telnet options are disabled for the management interface
+      debug:
+        msg: "{{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"
+
+
+
+
+    - name: " 1.2.4 - Check if both 'telnet': 'yes' and 'http': 'yes' exist in the actual_list"
+      set_fact:
+        complied: "{{ (actual_list['telnet'] == 'yes') or (actual_list['http'] == 'yes') }}"
+      ignore_errors: yes
+
+    - name: 1.2.4 - Ensure HTTP and Telnet options are disabled for all management profiles
+      debug:
+        msg: "{{ '1.2.4 - Ensure HTTP and Telnet options are disabled for all management profiles is NOT COMPLIED!!!' if complied else '1.2.4 Ensure HTTP and Telnet options are disabled for all management profiles is COMPLIED' }}"
+
+    
+
+    - name: 1.3.1 - Ensure Minimum Password  Complexity
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/mgt-config/password-complexity
+        cmd: 'show'
+      register: min_enabled
+
+    - debug: msg="{{ min_enabled.stdout }}"
+
+    - name: 1.3.1 - min_enabled to json
+      set_fact:
+        password_complexity: "{{ (min_enabled.stdout | trim | from_json) if min_enabled.stdout is string else min_enabled.stdout }}"
+      
+    - name: 1.3.1 - Parsed services
+      debug:
+        var: password_complexity
+    
+    - name: 1.3.1 - Map password complexity
+      set_fact:
+        complexity: '{{ password_complexity["********-complexity"] }}'
+      register: failorpass
+      ignore_errors: yes
+
+    - debug: msg="{{ failorpass }}"
+
+    - name: 1.3.1 - Check if password complexity and block username inclusion enabled
+      set_fact:
+        complied: "{{ (failorpass.failed == false) and (complexity['enabled'] == 'yes') and (complexity['block-username-inclusion'] == 'yes') }}"
+      ignore_errors: yes
+
+    - name: 1.3.1 - Verify if password complexity and block username inclusion enabled
+      debug:
+        msg: "1.3.1 - Verify Minimum Password  Complexity is enabled is {{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"
+
+
+    - name: 1.3.2 - Ensure Minimum length is greater than or equal to 14
+      set_fact:
+        complied: "{{ ('minimum-length' in complexity ) and (complexity['minimum-length'] >= '14') }}"
+      ignore_errors: yes
+
+    - name: 1.3.2 - Ensure Minimum length is greater than or equal to 14
+      debug:
+        msg: "1.3.2 - Verify Minimum length is greater than or equal to 14 is {{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"
+      
+
+    - name: 1.3.3 - Ensure Minimum Uppercase Letter is greater than or equal to 1
+      set_fact:
+        complied: "{{ ('minimum-uppercase-letters' in complexity ) and (complexity['minimum-uppercase-letters'] >= '1') }}"
+      ignore_errors: yes
+
+    - name: 1.3.3 - Ensure Minimum Uppercase Letter is greater than or equal to 1
+      debug:
+        msg: "1.3.3 - Verify Minimum Uppercase Letter is greater than or equal to 1 is {{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"    
+      
+    
+    - name: 1.3.4 - Ensure Minimum Lowercase Letter is greater than or equal to 1
+      set_fact:
+        complied: "{{ ('minimum-lowercase-letters' in complexity ) and (complexity['minimum-lowercase-letters'] >= '1') }}"
+      ignore_errors: yes
+
+    - name: 1.3.4 - Ensure Minimum Lowercase Letter is greater than or equal to 1
+      debug:
+        msg: "1.3.4 - Verify Minimum Lowercase Letter is greater than or equal to 1 is {{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"    
+      
+
+    - name: 1.3.5 - Ensure Minimum Numeric Letter is greater than or equal to 1
+      set_fact:
+        complied: "{{ ('minimum-numeric-letters' in complexity ) and (complexity['minimum-numeric-letters'] >= '1') }}"
+      ignore_errors: yes
+
+    - name: 1.3.5 - Ensure Minimum Numeric Letter is greater than or equal to 1
+      debug:
+        msg: "1.3.5 - Verify Minimum Numeric Letter is greater than or equal to 1 is {{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"    
+      
+
+    - name: 1.3.6 - Ensure Minimum special character is greater than or equal to 1
+      set_fact:
+        complied: "{{ ('minimum-special-characters' in complexity ) and (complexity['minimum-special-characters'] >= '1') }}"
+      ignore_errors: yes
+
+    - name: 1.3.6 - Verify Minimum special character is greater than or equal to 1
+      debug:
+        msg: "1.3.6 - Ensure Minimum special character is greater than or equal to 1 is {{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"    
+      
+
+    - name: 1.3.8 - Ensure new password differs by characters is greater than or equal to 3
+      set_fact:
+        complied: "{{ ('new-********-differs-by-characters' in complexity) and (complexity['new-********-differs-by-characters'] >= '3') }}"
+      ignore_errors: yes
+
+    - name: 1.3.8 - Verify new password differs by characters is greater than or equal to 3
+      debug:
+        msg: "1.3.8 - Ensure new password differs by characters is greater than or equal to 3 is {{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"    
+      
+
+    - name: 1.3.9 - Ensure prevent password reuse limit is set to 24 or more passwords
+      set_fact:
+        complied: "{{ ('********-history-count' in complexity) and (complexity['********-history-count'] >= '24') }}"
+      ignore_errors: yes
+
+    - name: 1.3.9 - Ensure prevent password reuse limit is set to 24 or more passwords
+      debug:
+        msg: "1.3.9 - Ensure prevent password reuse limit is set to 24 or more passwords is {{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"    
+      
+
+    - name: 1.3.10 - Check password profiles
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        cmd: 'show'
+        xpath: /config/mgt-config/password-profile
+      register: passwordprofile
+      ignore_errors: yes
+
+    - debug: msg="{{ passwordprofile.stdout }}"
+      ignore_errors: yes
+
+    - name: 1.3.10 - passwordprofile to json
+      set_fact:
+        passwordprofilejson: "{{ (passwordprofile.stdout | trim | from_json) if passwordprofile.stdout is string else passwordprofile.stdout }}"
+      ignore_errors: yes
+
+    - name: 1.3.10 - Parsed password profiles
+      debug:
+        var: passwordprofilejson
+      ignore_errors: yes
+ 
+    - name: 1.3.10 - Map Password Profile
+      set_fact:
+        passwordprofile_list: "{{ passwordprofilejson['********-profile']['entry']['********-change'] }}"
+      ignore_errors: yes
+
+    - name: 1.3.10 - Print password profile
+      debug:
+        var: passwordprofile_list
+      ignore_errors: yes
+
+    - name: 1.3.10 - Ensure Password Profile dont exist
+      set_fact:
+        complied: "{{ (passwordprofile_list['expiration-period'] >= '90') and (passwordprofile_list['expiration-warning-period'] >= '14') and (passwordprofile_list['post-expiration-admin-login-count'] >= '3') and (passwordprofile_list['post-expiration-grace-period'] >= '7') }}"
+      ignore_errors: yes
+
+    - name: 1.3.10 - Verify Password Profile dont exist
+      debug:
+        msg: "1.3.10 - Verify Password Profile dont exist is {{ 'COMPLIED!!!' if complied else 'NOT COMPLIED!!!' }}"    
+      
+    
+    - name: 1.4.1 - Show idle timeout config
+      panos_type_cmd:
+        provider: "{{ provider }}"
+        cmd: 'show'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/setting/management
+      register: idle
+
+    - name: 1.4.1 - Idle config to json
+      set_fact:
+        idle_timeout: "{{ (idle.stdout | trim | from_json) if idle.stdout is string else idle.stdout }}"
+      ignore_errors: yes
+
+
+    - name: 1.4.1 - Map idle config
+      set_fact:
+        actual_idle: "{{ idle_timeout['management'] }}"
+
+    - debug: msg="{{ actual_idle }}"
+
+    - name: Verify that idle-time is set correctly
+      debug:
+        msg: "Idle timeout configuration is {{ 'COMPLIANT' if ('idle-timeout' in actual_idle) and (actual_idle['idle-timeout'] <= '10') else 'NOT COMPLIANT!!!' }}"
+
+
+    - name: 1.4.2 - Show authentication profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/shared/authentication-profile
+        cmd: 'show'
+      register: authenticationprofile
+      ignore_errors: yes
+
+    - name: 1.4.2 - Authentication profile to json
+      set_fact:
+        authentication: "{{ (authenticationprofile.stdout | trim | from_json) if authenticationprofile.stdout is string else authenticationprofile.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ authentication }}"
+      ignore_errors: yes
+
+    - name: 1.4.2 - Target lockout
+      set_fact:
+        lockout: "{{ authentication['authentication-profile']['entry']['lockout'] }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ lockout }}"
+      ignore_errors: yes
+
+    - name: 1.4.2 - Verify if failed attempt and lockout time are configured compliantly
+      debug:
+        msg: "Debug 1.4.2 lockout and failed attempts are {{ 'COMPLIANT' if (authenticationprofile.failed == false) and (lockout['lockout-time'] == '<your organisation standard value>') and (lockout['failed-attempts'] == '<your organisation standard value>') else 'NOT COMPLIANT!!!' }}"
+
+
+    - name: 1.5.1 - Show polling
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system/snmp-setting/access-setting
+        cmd: 'show'
+      register: polling
+      ignore_errors: yes
+
+    - debug: msg='{{ polling }}'
+      ignore_errors: yes
+
+    - name: 1.5.1 - polling to json
+      set_fact:
+        authentication: "{{ (polling.stdout | trim | from_json) if polling.stdout is string else polling.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ authentication }}"
+      ignore_errors: yes
+
+    - name: 1.5.1 - Verify if Polling is set SNMPv3
+      debug:
+        msg: 1.5.1 - Ensure polling is set to SNMPv3 is enabled is {{ 'COMPLIED' if (polling.failed == false) and ('v3' in authentication['access-setting']['version']) else 'NOT COMPLIED!!!' }}
+
+
+    - name: 1.6.1 - Show server update configuration
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system
+        cmd: 'show'
+      register: server_update
+
+    - name: 1.6.1 - server update to json
+      set_fact:
+        serverupdate: "{{ (server_update.stdout | trim | from_json) if server_update.stdout is string else server_update.stdout }}"
+      ignore_errors: yes
+
+
+    - debug: msg="{{ serverupdate }}"
+
+    - name: 1.6.1 - Verify if server verification is enabled
+      debug:
+        msg: 1.6.1 - Verify update server identity is enabled is {{ 'COMPLIANT' if ('server-verification' in serverupdate['system']) and (serverupdate['system']['server-verification'] == 'yes') else 'NOT COMPLIANT!!!' }}
+
+
+    - name: 1.6.2 - Show ntp-server
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system/ntp-servers
+        cmd: 'show'
+      register: ntpserver
+      ignore_errors: yes
+
+    - name: 1.6.2 - ntpserver to json
+      set_fact:
+        serverupdate: "{{ (ntpserver.stdout | trim | from_json) if ntpserver.stdout is string else ntpserver.stdout }}"
+      ignore_errors: yes
+
+
+    - debug: msg="{{ serverupdate }}"
+      ignore_errors: yes
+
+    - name: 1.6.2 - Verify if primary NTP ip is set correctly
+      debug:
+        msg: COMPLIANT
+      when: serverupdate['ntp-servers']['primary-ntp-server']['ntp-server-address'] == '1.1.1.1'
+      register: ntpCompliant1
+      ignore_errors: yes
+
+    - name: 1.6.2 - Verify if secondary NTP ip is set correctly
+      debug:
+        msg: COMPLIANT
+      when: serverupdate['ntp-servers']['secondary-ntp-server']['ntp-server-address'] == '1.1.1.2'
+      register: ntpCompliant2
+      ignore_errors: yes
+
+    - name: 1.6.2 - Ensure redundant ntp servers are configured correctly 
+      debug:
+        msg: 1.6.2 - Ensure redundant ntp servers are configured correctly is {{ 'COMPLIANT' if (ntpserver.failed == false) and ('COMPLIANT' in ntpCompliant2.msg) and ('COMPLIANT' in ntpCompliant1.msg) else 'NOT COMPLIANT!!!' }}
+
+
+    - name: 3.1 - Show HA Config
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/high-availability
+        cmd: 'show'
+      register: haconfig
+      ignore_errors: yes
+
+    - name: 3.1 - haconfig to json
+      set_fact:
+        haconfigstdout: "{{ (haconfig.stdout | trim | from_json) if haconfig.stdout is string else haconfig.stdout }}"
+      ignore_errors: yes
+    
+    - debug: msg="{{ haconfigstdout }}"
+      ignore_errors: yes
+
+    - name: 3.1 - Check if high-availability is enabled
+      debug:
+        msg: High availibility is {{ 'enabled' if haconfigstdout['high-availability']['enabled'] == 'yes' else 'not enabled' }}
+      register: enabled
+      ignore_errors: yes
+
+    - name: 3.1 - Check if session sync is enabled
+      debug:
+        msg: State-sync is {{ 'enabled' if haconfigstdout['high-availability']['group']['state-synchronization']['enabled'] == 'yes' else 'not enabled' }}
+      register: enabled1
+      when: enabled.msg == 'High availibility is enabled'
+      ignore_errors: yes
+    
+    - name: 3.1 - Ensure fully synchronized High Availability peer is configured
+      debug:
+        msg: >
+          {{
+          '3.1 - Ensure fully synchronized High Availability peer is configured is COMPLIED' if
+          (
+            haconfig.failed == false and
+            'skipped' is not in enabled1 and
+            'High availibility is enabled' == enabled.msg and
+            'State-sync is enabled' == enabled1.msg and
+            haconfigstdout['high-availability']['group']['state-synchronization']['transport'] == 'ethernet'
+
+          )
+          else '3.1 - Ensure fully synchronized High Availability peer is configured is NOT COMPLIED!!!'
+          }}
+
+    - debug: msg="{{ haconfigstdout['high-availability']['group']['monitoring'] }}"
+
+    - name: 3.2 - Set expected link and path monitoring
+      set_fact:
+        expected_linkpath:
+          "link-monitoring":
+            "enabled": "yes"
+            "failure-condition": "any"
+            "link-group":
+              "entry":
+                "@name": "Link Group"
+                "interface":
+                  "member": "ethernet1/4"        
+          "path-monitoring":
+            "enabled": "yes"
+            "failure-condition": "any"
+            "path-group":
+              "virtual-router":
+                "entry":
+                  "@name": "default"
+                  "destination-ip-group":
+                    "entry":
+                      "@name": "IP Group"
+                      "destination-ip":
+                        "member": "<ip-address>"                
+                      "enabled": "yes"
+                      "failure-condition": "any"
+
+    - name: 3.2 - Verify that HA requires link monitoring and path monitoring
+      debug:
+        msg: >
+          {{
+            '3.2 - Verify that HA requires link monitoring and path monitoring is COMPLIED' if
+            (
+              haconfig.failed == false and
+              'skipped' is not in enabled1 and
+              haconfigstdout['high-availability']['group']['monitoring'] == expected_linkpath
+            )
+            else '3.2 - Verify that HA requires link monitoring and path monitoring is NOT COMPLIED'
+          }}
+
+
+    - name: 3.3 - Verify if passive link state and preemptive are configured correctly
+      debug:
+        msg: >
+          {{
+            '3.3 - Verify if passive link state and preemptive are configured correctly is COMPLIED' if
+            (
+              haconfig.failed == false and
+              'skipped' is not in enabled1 and
+              haconfigstdout['high-availability']['group']['election-option']['preemptive'] == 'no' and
+              haconfigstdout['high-availability']['group']['mode']['active-passive']['passive-link-state'] == 'auto'
+            )
+            else '3.3 - Verify if passive link state and preemptive are configured correctly is NOT COMPLIED'
+          }}
+
+
+    - name: 5.1 - Show wildfire configuration upload limits
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/setting/wildfire/file-size-limit
+        cmd: 'show'
+      register: uploadlimits
+      ignore_errors: yes
+
+    - name: 5.1 - uploadlimits to json
+      set_fact:
+        wildfireupload: "{{ (uploadlimits.stdout | trim | from_json) if uploadlimits.stdout is string else uploadlimits.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ wildfireupload }}"
+      ignore_errors: yes
+
+    - name: 5.1 - Set expected upload size limit
+      set_fact:
+        expected_limit:
+          "file-size-limit":
+            "entry":
+              - "@name": "pe"
+                "size-limit": "50"
+              - "@name": "apk"
+                "size-limit": "50"
+              - "@name": "pdf"
+                "size-limit": "51200"
+              - "@name": "ms-office"
+                "size-limit": "51200"
+              - "@name": "jar"
+                "size-limit": "20"
+              - "@name": "flash"
+                "size-limit": "10"
+              - "@name": "MacOSX"
+                "size-limit": "50"
+              - "@name": "archive"
+                "size-limit": "50"
+              - "@name": "linux"
+                "size-limit": "50"
+              - "@name": "script"
+                "size-limit": "4096"
+
+    - name: 5.1 Debug - Ensure wildfire upload size limits are maximized
+      debug:
+        msg: 5.1 - Ensure wildfire upload size limits are maximized is {{ 'COMPLIED' if (uploadlimits.failed == false) and (wildfireupload == expected_limit) else 'NOT COMPLIED!!!' }}
+
+
+
+    - name: 5.2 - Show file blocking rule
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/file-blocking
+        cmd: 'show'
+      register: fileblock
+      ignore_errors: yes
+
+    - debug: msg="{{ fileblock.failed }}"
+    
+    - name: 5.2 - fileblock to json
+      set_fact:
+        fileblockstdout: "{{ (fileblock.stdout | trim | from_json) if fileblock.stdout is string else fileblock.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ fileblockstdout }}"
+      ignore_errors: yes
+
+    - name: 5.2 - specify rules
+      set_fact:
+        target: "{{ fileblockstdout['file-blocking']['entry']['rules']['entry'] }}"
+      ignore_errors: yes
+
+    
+      
+    - name: 5.2 Debug - Verify forwarding is enabled for all apps and files
+      debug:
+        msg: "{{ 'COMPLIANT' if (fileblock.failed == false) and (target['action'] == 'continue') and (target['application']['member'] == 'any') and (target['file-type']['member'] == 'any') else 'NOT COMPLIANT' }}"
+      register: compliant
+
+
+    
+    - name: 5.3 - Show security policy
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules
+        cmd: 'show'
+      register: rules
+      ignore_errors: yes
+
+    - debug: msg="{{ rules.stdout }}"
+      ignore_errors: yes
+
+    - name: 5.3 - rules to json
+      set_fact:
+        rulesstdout: "{{ (rules.stdout | trim | from_json) if rules.stdout is string else rules.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ rulesstdout }}"
+      ignore_errors: yes
+
+    - name: 5.3 - Check if profile is set for profile-settings
+      debug:
+        msg: >
+          {{ 
+            'COMPLIANT' if 
+            rulesstdout['rules'] is not none and
+            'profile-setting' in rulesstdout['rules']['entry']
+            else 'NOT COMPLIANT'
+          }}
+      ignore_errors: yes
+      register: Compliancy1
+
+    - name: 5.3 - Check if profile-setting is set
+      debug:
+        msg: >
+          {{ 
+            'NOT COMPLIANT' if 
+            (
+              rulesstdout['rules']['entry']['profile-setting']['profiles'] is none
+            )
+            
+            else 'COMPLIANT' 
+          
+          }}
+      register: Compliancy2
+      when: Compliancy1.msg == 'COMPLIANT\n'
+      ignore_errors: yes
+    
+    - debug: msg="{{ Compliancy2 }}"
+
+    - name: 5.3 - Check if wildfire is set for profile setting
+      debug:
+        msg: >
+          {{
+            'COMPLIANT' if
+            'wildfire-analysis' in rulesstdout['rules']['entry']['profile-setting']['profiles']
+            else 'NOT COMPLIANT'
+          }}
+      register: Compliancy3
+      when: Compliancy1.msg == 'COMPLIANT\n' and Compliancy2.msg == 'COMPLIANT\n'
+
+    - name: 5.3 - Check if the correct wildfire profile is set
+      debug:
+        msg: >
+          {{ 'COMPLIANT' if rulesstdout['rules']['entry']['profile-setting']['profiles']['wildfire-analysis']['member'] == 'Wildfire Profile' else 'NOT COMPLIANT' }}
+      register: Compliancy4
+      when: Compliancy1.msg == 'COMPLIANT\n' and Compliancy2.msg == 'COMPLIANT\n' and Compliancy3.msg == 'COMPLIANT\n'
+
+    - debug: msg="{{ Compliancy4 }}"
+      ignore_errors: yes
+
+    - name: Contain skip
+      debug:
+        msg: "{{ 'NOTCOMPLIANT' if 'skipped' in Compliancy4 else 'COMPLIED' }}"
+      register: skiptest
+      ignore_errors: yes
+
+    - name: 5.3 - Compliant Conclusion
+      debug:
+        msg: >
+          {{ 
+            '5.3 Ensure wildfire is enabled is COMPLIANT' if 
+            (
+              rules.failed == false and
+              'COMPLIED' in skiptest.msg and
+              'NOT COMPLIANT' not in Compliancy4.msg
+            )
+            else '5.3 Ensure wildfire is enabled is NOT COMPLIANT!!!'  
+          }}
+
+    
+    - name: 5.4 - Show Content-ID Config
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /setting/ssl-decrypt
+        cmd: 'show'
+      register: contentid
+      ignore_errors: yes
+
+    - name: 5.4 - contentid to json
+      set_fact:
+        contentidstdout: "{{ (contentid.stdout | trim | from_json) if contentid.stdout is string else contentid.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ contentidstdout }}"
+      ignore_errors: yes
+
+    - name: 5.4 - Verify if Content-ID Config is compliant
+      debug:
+        msg: 5.4 Ensure forwarding of decrypted content is enabled is {{ 'COMPLIANT' if (contentid.failed == false) and (contentidstdout['ssl-decrypt']['allow-forward-decrypted-content'] == 'yes') else 'NOT COMPLIANT!!!' }}
+
+
+    - name: Show Wildfire Session Info Configuration
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/devices/entry[@name='localhost.localdomain']/deviceconfig/setting/wildfire/session-info-select
+        cmd: 'show'
+      register: session_info
+      ignore_errors: yes
+
+    - debug: msg="{{ session_info }}" 
+
+    - name: 5.4 - session_info to json
+      set_fact:
+        session_infostdout: "{{ (session_info.stdout | trim | from_json) if session_info.stdout is string else session_info.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ session_infostdout }}"
+      ignore_errors: yes
+
+
+    #if it says a variable has no attribut, it just means that u have to unselect and select the options
+    #the option may look ticked but in fact it isnt
+    - name: Verify if session info is compliant
+      debug:
+        msg: >
+          {{ '5.5 Ensure all options in session info are enabled is COMPLIANT' if
+          (
+            session_info.failed == false and
+            session_infostdout['session-info-select']['exclude-app-name'] == 'no' and
+            session_infostdout['session-info-select']['exclude-dest-ip'] == 'no' and
+            session_infostdout['session-info-select']['exclude-dest-port'] == 'no' and
+            session_infostdout['session-info-select']['exclude-email-recipient'] == 'no' and
+            session_infostdout['session-info-select']['exclude-email-sender'] == 'no' and
+            session_infostdout['session-info-select']['exclude-email-subject'] == 'no' and
+            session_infostdout['session-info-select']['exclude-filename'] == 'no' and
+            session_infostdout['session-info-select']['exclude-src-ip'] == 'no' and
+            session_infostdout['session-info-select']['exclude-src-port'] == 'no' and
+            session_infostdout['session-info-select']['exclude-url'] == 'no' and
+            session_infostdout['session-info-select']['exclude-username'] == 'no' and
+            session_infostdout['session-info-select']['exclude-vsys-id'] == "no"
+          )
+          else '5.5 Ensure all options in session info are enabled is NOT COMPLIANT' 
+          }}
+
+    - name: 5.6 - Show Log Forward Profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: /config/shared/log-settings
+        cmd: 'show'
+      register: logforward
+
+
+    - name: 5.6 - logforward to json
+      set_fact:
+        logforwardstdout: "{{ (logforward.stdout | trim | from_json) if logforward.stdout is string else logforward.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ logforwardstdout }}"
+
+    - name: 5.6 - Target profile
+      set_fact:
+        logforwardspecific: "{{ logforwardstdout['log-settings']['profiles']['entry']['match-list']['entry'] }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ logforwardspecific }}"
+      ignore_errors: yes
+
+    - name: 5.6 - Verify if log forwarding profile is compliant
+      debug:
+        msg: >
+          {{
+            '5.6 Ensure alerts are enabled for malicious file by wildfire is COMPLIANT' if
+            ( 
+              'profiles' in logforwardstdout and
+              logforwardstdout['profiles'] is not none and
+              logforwardspecific['filter'] == '(verdict neq benign)' and
+              logforwardspecific['log-type'] == 'wildfire' and
+              logforwardspecific['send-email']['member'] == 'Email Server' and
+              logforwardspecific['send-http']['member'] == 'HTTP Profile' and
+              logforwardspecific['send-snmptrap']['member'] == 'SNMP Profile' and
+              logforwardspecific['send-syslog']['member'] == 'Syslog'
+            )
+            else '5.6 Ensure alerts are enabled for malicious file by wildfire is NOT COMPLIANT!!!'
+          }}
+
+
+
+    - name: 6.1 - Show antivrus profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/virus/entry[@name="AntivirusProfile"]
+        cmd: 'show'
+      register: antivirus
+      ignore_errors: true
+
+    - name: 6.1 - antivirus to json
+      set_fact:
+        antivirusstdout: "{{ (antivirus.stdout | trim | from_json) if antivirus.stdout is string else antivirus.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ antivirusstdout['entry']['decoder'] }}"
+      ignore_errors: yes
+
+    - name: 6.1 - Compliant Expected Output
+      set_fact:
+        expected_antivirus:
+          "entry":
+            - "@name": "ftp"
+              "action": "drop"
+              "mlav-action": "default"
+              "wildfire-action": "drop"
+
+            - "@name": "http"
+              "action": "drop"
+              "mlav-action": "default"
+              "wildfire-action": "drop"
+
+            - "@name": "http2"
+              "action": "drop"
+              "mlav-action": "default"
+              "wildfire-action": "drop"
+
+            - "@name": "imap"
+              "action": "reset-both"
+              "mlav-action": "default"
+              "wildfire-action": "reset-both"
+            
+            - "@name": "pop3"
+              "action": "reset-both"
+              "mlav-action": "default"
+              "wildfire-action": "reset-both"
+
+            - "@name": "smb"
+              "action": "drop"
+              "mlav-action": "default"
+              "wildfire-action": "drop"
+
+            - "@name": "smtp"
+              "action": "drop"
+              "mlav-action": "default"
+              "wildfire-action": "drop"
+      ignore_errors: yes
+
+    - debug: msg="{{ expected_antivirus }}"
+      ignore_errors: yes
+            
+
+    - name: 6.1 - Verify if all decoders are configured correctly
+      debug:
+        msg: >
+          {{
+            '6.1 - Ensure that antivirus is set to block on all decoders except imap and pop3 is COMPLIANT' if
+            (
+              antivirus.failed == false and
+              antivirusstdout['entry']['decoder'] == expected_antivirus
+            )
+            else '6.1 - Ensure that antivirus is set to block on all decoders except imap and pop3 is NOT COMPLIANT!!!'
+          }}
+
+    
+    - name: 6.2 - Show antivirus security profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='Antivirus Security Rule']
+        cmd: 'show'
+      register: antivirusprofile
+      ignore_errors: yes
+
+    - debug: msg="{{ antivirusprofile.stdout }}"
+      ignore_errors: yes
+
+    - name: 6.2 - antivirusprofile to json
+      set_fact:
+        antivirusrulesstdout: "{{ (antivirusprofile.stdout | trim | from_json) if antivirusprofile.stdout is string else antivirusprofile.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ antivirusrulesstdout }}"
+      ignore_errors: yes
+
+    - name: 6.2 - Ensure secure antivirus profile is applied
+      debug:
+        msg: >
+          {{
+            '6.2 Ensure secure antivirus profile is applied is COMPLIED' if
+            (
+              antivirusprofile.failed == false and
+              antivirusrulesstdout['entry']['profile-setting']['profiles'] is not none and
+              antivirusrulesstdout['entry']['profile-setting']['profiles']['virus']['member'] == "AntivirusProfile"
+            )
+            else '6.2 Ensure secure antivirus profile is applied is NOT COMPLIED'
+          }}
+
+
+    - name: 6.3 - Ensure an anti-spyware profile is configured to block on all spyware severity levels, categories, and threats
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/spyware/entry[@name='AntiSpywareProfile']
+        cmd: 'show'
+      register: anti_spyware
+      ignore_errors: yes
+
+    - name: 6.3 - anti_spyware to json
+      set_fact:
+        antispywarestdout: "{{ (anti_spyware.stdout | trim | from_json) if anti_spyware.stdout is string else anti_spyware.stdout }}"
+      ignore_errors: yes
+
+    - name: 6.3 - Target rules
+      set_fact: 
+        spywaretarget: "{{ antispywarestdout['entry']['rules'] }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ spywaretarget }}"
+      ignore_errors: yes
+
+    - name: 6.3 Ensure anti-spyware profile blocks all spyware severity, categories and threats
+      debug:
+        msg: >
+          {{
+            '6.3 Ensure anti-spyware profile blocks all spyware severity, categories and threats is COMPLIANT' if
+            (
+              anti_spyware.failed == false and
+              'drop' in spywaretarget['entry']['action'] and
+              spywaretarget['entry']['category'] == 'any' and
+              spywaretarget['entry']['severity']['member'] == 'any' and
+              spywaretarget['entry']['threat-name'] == 'any'
+            )
+            else '6.3 Ensure anti-spyware profile blocks all spyware severity, categories and threats is NOT COMPLIANT'
+          }}
+
+    
+    - name: 6.4 - Include spyware profile in anti-spyware policy
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='Antispyware Security Rule']
+        cmd: 'show'
+      register: antispywarepolicy
+      ignore_errors: yes
+
+    - name: 6.4 - antispywarepolicy to json
+      set_fact:
+        antispywarestdout: "{{ (antispywarepolicy.stdout | trim | from_json) if antispywarepolicy.stdout is string else antispywarepolicy.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ antispywarestdout }}"
+      ignore_errors: yes
+
+    - name: 6.4 - Ensure DNS sinkhole is configured on anti-spyware profile is
+      debug:
+        msg: >
+          {{
+            '6.4 - Ensure DNS sinkhole is configured on anti-spyware profile is COMPLIED' if
+            (
+              antispywarepolicy.failed == false and
+              antispywarestdout['entry']['profile-setting']['profiles'] is not none and
+              antispywarestdout['entry']['profile-setting']['profiles']['spyware']['member'] == "AntiSpywareProfile"
+            )
+            else '6.4 - Ensure DNS sinkhole is configured on anti-spyware profile is NOT COMPLIED'
+          }}
+    
+    
+    - name: 6.5 - Show antispyware policy
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='Antispyware Security Rule2']
+        cmd: 'show'
+      register: antispywarepolicy2
+      ignore_errors: yes
+
+    - name: 6.5 - antispywarepolicy2 to json
+      set_fact:
+        antispywarestdout2: "{{ (antispywarepolicy2.stdout | trim | from_json) if antispywarepolicy2.stdout is string else antispywarepolicy2.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ antispywarestdout2 }}"
+      ignore_errors: yes
+
+    - name: 6.5 - Anti-spyware profile is compliant
+      debug:
+        msg: >
+          {{
+            'COMPLIED' if
+            (
+              antispywarepolicy2.failed == false and
+              antispywarestdout2['entry']['source']['member'] == 'any' and
+              antispywarestdout2['entry']['destination']['member'] == 'any' and
+              antispywarestdout2['entry']['application']['member'] == 'any' and
+              antispywarestdout2['entry']['service']['member'] == 'any'
+            )
+            else 'NOTCOMPLIANT'
+          }}
+      register: spywareCompliant
+      
+    - name: 6.5 - show spyware progile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/spyware/entry[@name='AntiSpywareProfile2']
+        cmd: 'show'
+      register: anti_spyware2
+      ignore_errors: yes
+
+    - name: 6.5 - anti_spyware2 to json
+      set_fact:
+        antispywarestdout2: "{{ (anti_spyware2.stdout | trim | from_json) if anti_spyware2.stdout is string else anti_spyware2.stdout }}"
+      ignore_errors: yes
+
+    - name: 6.5 - Target rules
+      set_fact: 
+        spywaretarget2: "{{ antispywarestdout2['entry']['rules'] }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ spywaretarget2 }}"
+      ignore_errors: yes
+
+    - name: 6.5 - Compliant test
+      debug:
+        msg: >
+          {{
+            'COMPLIED' if
+            (
+              anti_spyware2.failed == false and
+              'drop' in spywaretarget2['entry']['action'] and
+              spywaretarget2['entry']['category'] == 'any' and
+              spywaretarget2['entry']['severity']['member'] == 'any' and
+              spywaretarget2['entry']['threat-name'] == 'any'
+            )
+            else 'NOTCOMPLIANT'
+          }}
+      register: spywareCompliant2
+
+    - name: Debug 6.5 - Security rules permitting traffic is Compliant
+      debug:
+        msg: >
+          {{
+            '6.5 - Security rules permitting traffic is COMPLIED' if
+            (
+              anti_spyware2.failed == false and
+              'drop' in spywaretarget2['entry']['action'] and
+              'COMPLIED' in spywareCompliant.msg and
+              'COMPLIED' in spywareCompliant2.msg
+            )
+            else '6.5 - Security rules permitting traffic is NOT COMPLIED'
+          }}
+
+    
+
+    - name: 6.6 - Show vulnerability protection profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/vulnerability/entry[@name='VulnerabilityProtectionProfile']
+        cmd: 'show'
+      register: vulnerabilityproc
+      ignore_errors: yes
+    
+    - name: 6.6 - vulnerabilityproc to json
+      set_fact:
+        vulnerabilityprocstdout: "{{ (vulnerabilityproc.stdout | trim | from_json) if vulnerabilityproc.stdout is string else vulnerabilityproc.stdout }}"
+      ignore_errors: yes
+    
+
+    - name: 6.6 - Set expected format
+      set_fact:
+        expected_vulnerability:
+          - "@name": "critcal and high"
+            "action":
+              "drop": null
+            "category": "any"
+            "cve":
+              "member": "any"
+            "host": "any"
+            "packet-capture": "disable"
+            "severity":
+              "member":
+                - "critical"
+                - "high"
+            "threat-name": "any"
+            "vendor-id":
+              "member": "any"
+          - "@name": "medium, low and informational"
+            "action":
+              "default": null
+            "category": "any"
+            "cve":
+              "member": "any"
+            "host": "any"
+            "packet-capture": "disable"
+            "severity":
+              "member":
+                - "medium"
+                - "low"
+                - "informational"
+            "threat-name": "any"
+            "vendor-id":
+              "member": "any"
+        actual_vullist: "{{ vulnerabilityprocstdout['entry']['rules']['entry'] }}"
+      ignore_errors: yes     
+
+    - debug: msg="{{ expected_vulnerability }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ actual_vullist }}"
+      ignore_errors: yes
+
+
+    - name: 6.6 - Verify if vulnerability protection is set to block attacks
+      debug:
+        msg: >
+          {{
+          '6.6 - Ensure vulnerability protection profile block attack for high and critical and default for medium low info is COMPLIANT' if
+          (
+            vulnerabilityproc.failed == false and 
+            actual_vullist == expected_vulnerability
+          )
+          else '6.6 - Ensure vulnerability protection profile block attack for high and critical and default for medium low info is NOT COMPLIANT!!!'
+          }}
+
+
+    - name: 6.7 - Show vulnerability policy
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='VulnerabilitySecurityRule']
+        cmd: 'show'
+      register: vulnerabilitypolicy
+      ignore_errors: yes
+
+    - name: 6.7 - vulnerabilitypolicy to json
+      set_fact:
+        vulnerabilitypolicystdout: "{{ (vulnerabilitypolicy.stdout | trim | from_json) if vulnerabilitypolicy.stdout is string else vulnerabilitypolicy.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ vulnerabilitypolicystdout }}"
+      ignore_errors: yes
+
+    - name: 6.7 - Check security-profile exist
+      debug:
+        msg: >
+          {{
+          'profile setting exist' if
+          'profile-setting' in vulnerabilitypolicystdout['entry']
+          else 'profile setting do not exist'
+          }}
+      register: compliancy1
+      ignore_errors: yes
+
+    - debug: msg="{{ compliancy1 }}"
+      ignore_errors: yes
+
+    - name: 6.7 - Check if vulnerability profile is set
+      debug:
+        msg: >
+          {{
+          'vulnerabiltiy profile exist' if
+          vulnerabilitypolicystdout['entry']['profile-setting']['profiles'] is not none and
+          'vulnerability' in vulnerabilitypolicystdout['entry']['profile-setting']['profiles']
+          else 'vulnerabiltiy profile do not exist'
+          }}
+      when: compliancy1.msg == 'profile setting exist\n'
+      register: compliancy2
+      ignore_errors: yes
+
+    - name: 6.7 - Check if vulnerabiliy profile is configured as strict or default or custom
+      debug:
+        msg: >
+          {{
+          'COMPLIANT' if 
+          vulnerabilitypolicystdout['entry']['profile-setting']['profiles']['vulnerability']['member'] == 'VulnerabilityProtectionProfile' or
+          vulnerabilitypolicystdout['entry']['profile-setting']['profiles']['vulnerability']['member'] == 'strict' or
+          vulnerabilitypolicystdout['entry']['profile-setting']['profiles']['vulnerability']['member'] ==  'default'
+          else 'NOTCOMPLIED'
+          }}
+      when: 
+        - compliancy1.msg == 'profile setting exist\n'
+        - compliancy2.msg == 'vulnerabiltiy profile exist\n'
+      register: vulnerabilitypolicycomply
+      ignore_errors: yes
+
+    - debug: msg="{{ vulnerabilitypolicycomply }}"
+      ignore_errors: yes
+
+
+    - name: 6.7 - Verify vulnerability policy has a strict, default or custom vulnerability profile
+      debug:
+        msg: >
+          {{
+          '6.7 - Verify vulnerability policy has a strict, default or custom vulnerability profile is COMPLIED' if 
+          vulnerabilitypolicy.failed == false and
+          'skipped' is not in vulnerabilitypolicycomply and
+          'NOTCOMPLIED' is not in vulnerabilitypolicycomply.msg
+          else '6.7 - Verify vulnerability policy has a strict, default or custom vulnerability profile is NOT COMPLIED!!!'
+          }}
+
+    
+    - name: 6.10 - Show URL Profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/url-filtering/entry[@name='URLFilteringProfile']
+        cmd: 'show'
+      register: urlprofile
+      ignore_errors: yes
+
+    - name: 6.10 - urlprofile to json
+      set_fact:
+        urlprofilestdout: "{{ (urlprofile.stdout | trim | from_json) if urlprofile.stdout is string else urlprofile.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ urlprofilestdout['entry']['alert'] }}"
+      ignore_errors: yes
+      
+    - name: 6.10 - Expected url filter
+      set_fact:
+        expected_alert:
+          "member":
+            - "abortion"
+            - "abused-drugs"
+            - "adult"
+            - "alcohol-and-tobacco"
+            - "auctions"
+            - "business-and-economy"
+            - "command-and-control"
+            - "computer-and-internet-info"
+            - "content-delivery-networks"
+            - "copyright-infringement"
+            - "cryptocurrency"
+            - "dating"
+            - "dynamic-dns"
+            - "educational-institutions"
+            - "entertainment-and-arts"
+            - "extremism"
+            - "financial-services"
+            - "gambling"
+            - "games"
+            - "government"
+            - "grayware"
+            - "hacking"
+            - "health-and-medicine"
+            - "high-risk"
+            - "home-and-garden"
+            - "hunting-and-fishing"
+            - "insufficient-content"
+            - "internet-communications-and-telephony"
+            - "internet-portals"
+            - "job-search"
+            - "legal"
+            - "low-risk"
+            - "malware"
+            - "medium-risk"
+            - "military"
+            - "motor-vehicles"
+            - "music"
+            - "newly-registered-domain"
+            - "news"
+            - "not-resolved"
+            - "nudity"
+            - "online-storage-and-backup"
+            - "parked"
+            - "peer-to-peer"
+            - "personal-sites-and-blogs"
+            - "philosophy-and-political-advocacy"
+            - "phishing"
+            - "private-ip-addresses"
+            - "proxy-avoidance-and-anonymizers"
+            - "questionable"
+            - "real-estate"
+            - "real-time-detection"
+            - "recreation-and-hobbies"
+            - "reference-and-research"
+            - "religion"
+            - "search-engines"
+            - "sex-education"
+            - "shareware-and-freeware"
+            - "shopping"
+            - "social-networking"
+            - "society"
+            - "sports"
+            - "stock-advice-and-tools"
+            - "streaming-media"
+            - "swimsuits-and-intimate-apparel"
+            - "training-and-tools"
+            - "translation"
+            - "travel"
+            - "unknown"
+            - "weapons"
+            - "web-advertisements"
+            - "web-based-email"
+            - "web-hosting"
+      ignore_errors: yes
+
+    - debug: msg='{{ expected_alert }}'
+      ignore_errors: yes
+
+    - name: 6.10 - Verify if site access is set to alert for urls
+      debug:
+        msg: 6.10 - Ensure access to every url is logged is {{ 'COMPLIANT' if (urlprofile.failed == false) and (expected_alert == urlprofilestdout['entry']['alert']) else 'NOT COMPLIED!!!' }}
+      ignore_errors: yes
+
+    - name: 6.11 - Verify if there is logging options
+      debug:
+        msg: >
+          {{
+            'exists' if
+            'log-container-page-only' in urlprofilestdout['entry'] and
+            'log-http-hdr-referer' in urlprofilestdout['entry'] and
+            'log-http-hdr-user-agent' in urlprofilestdout['entry'] and
+            'log-http-hdr-xff' in urlprofilestdout['entry']
+            else 'donthave'
+          }}
+      register: loggingexist
+      ignore_errors: yes
+    
+    - debug: msg="{{ loggingexist }}"
+      ignore_errors: yes
+
+    - name: 6.11 - Verify all HTTP Header logging options are enabled
+      debug:
+        msg: > 
+          {{
+            '6.11 - Ensure all HTTP Header logging options are enabled is COMPLIED' if
+            (
+              urlprofile.failed == false and
+              urlprofilestdout['entry']['log-container-page-only'] == 'no' and
+              urlprofilestdout['entry']['log-http-hdr-referer'] == 'yes' and
+              urlprofilestdout['entry']['log-http-hdr-user-agent'] == 'yes' and
+              urlprofilestdout['entry']['log-http-hdr-xff'] == 'yes'
+            )
+            else '6.11 - Ensure all HTTP Header logging options are enabled is NOT COMPLIED!!!'
+          }}
+      when: loggingexist.msg == 'exists\n'
+
+
+      
+    - name: 6.12 - Show url filteringpolicy
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='URL Filtering Security Rule']
+        cmd: 'show'
+      register: urlfilteringpolicy
+      ignore_errors: yes
+
+    - name: 6.12 - urlfilteringpolicy to json
+      set_fact:
+        urlfilteringpolicystdout: "{{ (urlfilteringpolicy.stdout | trim | from_json) if urlfilteringpolicy.stdout is string else urlfilteringpolicy.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ urlfilteringpolicystdout }}"
+      ignore_errors: yes
+
+    - name: 6.12 - Check if there is profile-setting
+      debug:
+        msg: >
+          {{
+          'profile setting exist' if
+            'profile-setting' in urlfilteringpolicystdout['entry']
+          else
+          'NOTCOMPLIED'
+          }}
+      register: compliancy1
+      ignore_errors: yes
+
+    
+    - name: 6.12 - Check if profile is not null and url filtering exist
+      debug:
+        msg: >
+          {{
+          'profile setting exist' if
+          (
+            urlfilteringpolicystdout['entry']['profile-setting']['profiles'] is not none and
+            'url-filtering' in urlfilteringpolicystdout['entry']['profile-setting']['profiles']
+          )
+          else 'NOTCOMPLIED'
+          }}
+      register: compliancy2
+      when: compliancy1.msg == 'profile setting exist\n'
+      ignore_errors: yes
+
+    - name: 6.12 - Check if url-filtering is set to the right profile
+      debug:
+        msg: >
+          {{
+          'COMPLIED' if
+            urlfilteringpolicystdout['entry']['profile-setting']['profiles']['url-filtering']['member'] == 'URLFilteringProfile'
+          else 'NOT COMPLIANT'
+          }}
+      when: compliancy1.msg == 'profile setting exist\n' and compliancy2.msg == 'profile setting exist\n'
+      register: compliancy3
+      ignore_errors: yes
+
+    - name: 6.12 - Ensure secure URL filtering is enabled for all security policy allowing trafic to the Internet
+      debug:
+        msg: >
+          {{
+          '6.12 - Ensure secure URL filtering is enabled for all security policy allowing trafic to the Internet is COMPLIED' if
+          (
+            urlfilteringpolicy.failed == false and
+            'skipped' is not in compliancy3 and
+            'COMPLIED' in compliancy3.msg
+          )
+          else '6.12 - Ensure secure URL filtering is enabled for all security policy allowing trafic to the Internet is NOT COMPLIED!!!'
+          }}
+
+
+
+
+    - name: 6.13 - Show datafiltering profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/data-filtering/entry[@name='DataFilteringProfile']
+        cmd: 'show'
+      register: datafilteringprofile
+      ignore_errors: yes
+
+    - name: 6.13 - datafilteringprofile to json
+      set_fact:
+        datafilteringprofilestdout: "{{ (datafilteringprofile.stdout | trim | from_json) if datafilteringprofile.stdout is string else datafilteringprofile.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ datafilteringprofilestdout }}"
+      ignore_errors: yes
+
+    - name: 6.13 - Ensure Ensure that alert after a threshold of credit card or Social Security numbers is detected is enabled
+      debug:
+        msg: >
+          {{
+          '6.13 - Ensure Ensure that alert after a threshold of credit card or Social Security numbers is detected is enabled is COMPLIED' if
+          (
+          datafilteringprofile.failed == false and
+          'rules' in datafilteringprofilestdout['entry'] and
+          datafilteringprofilestdout['entry']['rules']['entry']['alert-threshold'] == '20' and
+          datafilteringprofilestdout['entry']['rules']['entry']['data-object'] == 'DataPattern'
+          )
+          else '6.13 - Ensure Ensure that alert after a threshold of credit card or Social Security numbers is detected is enabled is NOT COMPLIED!!!'
+          }}
+
+
+    - name: 6.14 - Show data filteringpolicy
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='Data Filtering Security Rule']
+        cmd: 'show'
+      register: datafilteringpolicy
+      ignore_errors: yes
+
+    - name: 6.14 - datafilteringpolicy to json
+      set_fact:
+        datafilteringpolicystdout: "{{ (datafilteringpolicy.stdout | trim | from_json) if datafilteringpolicy.stdout is string else datafilteringpolicy.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ datafilteringpolicystdout }}"
+      ignore_errors: yes
+
+    - name: 6.14 - Check if there is profile-setting
+      debug:
+        msg: >
+          {{
+          'profile setting exist' if
+            'profile-setting' in datafilteringpolicystdout['entry']
+          else
+          'NOTCOMPLIED'
+          }}
+      register: compliancy1
+      ignore_errors: yes
+
+    
+    - name: 6.14 - Check if profile is not null and data filtering exist
+      debug:
+        msg: >
+          {{
+          'profile setting exist' if
+          (
+            datafilteringpolicystdout['entry']['profile-setting']['profiles'] is not none and
+            'data-filtering' in datafilteringpolicystdout['entry']['profile-setting']['profiles']
+          )
+          else 'NOTCOMPLIED'
+          }}
+      register: compliancy2
+      when: compliancy1.msg == 'profile setting exist\n'
+      ignore_errors: yes
+
+    - name: 6.14 - Check if data-filtering is set to the right profile
+      debug:
+        msg: >
+          {{
+          'COMPLIED' if
+            datafilteringpolicystdout['entry']['profile-setting']['profiles']['data-filtering']['member'] == 'DataFilteringProfile'
+          else 'NOT COMPLIANT'
+          }}
+      when: compliancy1.msg == 'profile setting exist\n' and compliancy2.msg == 'profile setting exist\n'
+      register: compliancy3
+      ignore_errors: yes
+
+    - name: 6.14 - Ensure secure Data filtering is enabled for all security policy allowing trafic to the Internet
+      debug:
+        msg: >
+          {{
+          '6.14 - Ensure secure Data filtering is enabled for all security policy allowing trafic to the Internet is COMPLIED' if
+          (
+            datafilteringpolicy.failed == false and
+            'skipped' is not in compliancy3 and
+            'COMPLIED' in compliancy3.msg
+          )
+          else '6.14 - Ensure secure Data filtering is enabled for all security policy allowing trafic to the Internet is NOT COMPLIED!!!'
+          }}
+
+    
+    - name: 6.15 - Show zone protection
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /network/profiles/zone-protection-profile/entry[@name='ZoneProtection']
+        cmd: 'show'
+      register: zoneprotection
+      ignore_errors: yes
+
+    - name: 6.15 - Show zone
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /zone
+        cmd: 'show'
+      register: zone
+      ignore_errors: yes
+
+    - name: 6.15 - zoneprotection to json
+      set_fact:
+        zoneprotectionstdout: "{{ (zoneprotection.stdout | trim | from_json) if zoneprotection.stdout is string else zoneprotection.stdout }}"
+      ignore_errors: yes
+
+    - name: 6.15 - zone to json
+      set_fact:
+        zonestdout: "{{ (zone.stdout | trim | from_json) if zone.stdout is string else zone.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ zoneprotectionstdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ zonestdout }}"
+      ignore_errors: yes
+
+
+    - name: 6.15 - Flood Protection configured correctly
+      debug:
+        msg: >
+          {{
+          'zoneprotection compliant' if
+          (
+            zoneprotectionstdout['entry']['flood']['tcp-syn']['enable'] == 'yes' and
+            zoneprotectionstdout['entry']['flood']['tcp-syn']['syn-cookies']['activate-rate'] == '25000' and
+            zoneprotectionstdout['entry']['flood']['tcp-syn']['syn-cookies']['alarm-rate'] == '20000' and
+            zoneprotectionstdout['entry']['flood']['tcp-syn']['syn-cookies']['maximal-rate'] == '1000000'
+          )
+          else 'zoneprotection not complied'
+          }}
+      register: zonecomply1
+      ignore_errors: yes
+
+    - name: 6.15 - Zone set correctly
+      debug:
+        msg: >
+          {{
+          'Zone compliant' if
+          (
+            zonestdout['zone']['entry']['network']['zone-protection-profile'] == 'ZoneProtection'
+          )
+          else 'Zone not complied'
+          }}
+      register: zonecomply2
+      ignore_errors: yes
+
+    - name: 6.15 - Zone protection profile with enabled syn flood action is attached to untrusted zones
+      debug:
+        msg: >
+          {{
+          '6.15 - Zone protection profile with enabled syn flood action is attached to untrusted zones is COMPLIED' if
+          (
+            zoneprotection.failed == false and
+            zone.failed == false and
+            'Zone compliant' in zonecomply2.msg and
+            'zoneprotection compliant' in zonecomply1.msg
+
+          )
+          else '6.15 - Zone protection profile with enabled syn flood action is attached to untrusted zones is NOT COMPLIED!!!'
+          }}
+
+
+    - name: 6.17 - Set expected reconnaissance configuration
+      set_fact:
+        expected_reconnaissance:
+          - "@name": "8001"
+            "action":
+              "block-ip":
+                "duration": "1"
+                "track-by": "source"
+            "interval": "5"
+            "threshold": "20"
+          - "@name": "8002"
+            "action":
+              "block": null
+            "interval": "10"
+            "threshold": "30"
+          - "@name": "8003"
+            "action":
+              "alert": null
+            "interval": "10"
+            "threshold": "20"
+      ignore_errors: yes
+
+    - debug: msg="{{ expected_reconnaissance }}"
+      ignore_errors: yes
+        
+
+    - name: 6.17 - Ensure that reconnaissance protection settings enabled, tuner and set
+      debug:
+        msg: >
+          {{
+          '6.17 - Ensure that reconnaissance protection settings enabled, tuner and set is COMPLIED' if
+          (
+            zoneprotection.failed == false and
+            expected_reconnaissance == zoneprotectionstdout['entry']['scan']['entry']
+          )
+          else '6.17 - Ensure that reconnaissance protection settings enabled, tuner and set is NOT COMPLIED!!!'
+          }}
+    
+
+
+    - name: Debug 6.18 - Ensure all zones have zone protection profile that drop specially crafted packets
+      debug:
+        msg: >
+          {{
+          'Ensure all zones have zone protection profile that drop specially crafted packets is COMPLIED' if
+          (
+            zoneprotection.failed == false and
+            zoneprotectionstdout['entry']['discard-ip-spoof'] == 'yes' and
+            zoneprotectionstdout['entry']['discard-overlapping-tcp-segment-mismatch'] == 'yes' and
+            zoneprotectionstdout['entry']['discard-loose-source-routing'] == 'yes' and
+            zoneprotectionstdout['entry']['discard-strict-source-routing'] == 'yes' and
+            zoneprotectionstdout['entry']['discard-malformed-option'] == 'yes'
+          )
+          else 'Ensure all zones have zone protection profile that drop specially crafted packets is NOT COMPLIED!!!'
+          }}
+
+    
+
+
+    - name: 6.19 - Show url profile
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /profiles/url-filtering/entry[@name='URLFilteringProfile']
+        cmd: 'show'
+      register: urlprofile
+      ignore_errors: yes
+
+    - name: 6.19 - urlprofile to json
+      set_fact:
+        urlprofilestdout: "{{ (urlprofile.stdout | trim | from_json) if urlprofile.stdout is string else urlprofile.stdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ urlprofilestdout }}"
+      ignore_errors: yes
+    
+    #FILL FREE TO MODIFY WHAT U DEEM SHOULD BE BLOCKED OR ALERTED
+    #THIS LIST IS COMPARED TO WHAT U SET, IF MATCH COMPLY:)
+    - name: 6.19 - Set expected actions
+      set_fact:
+        expected_alert:
+          "block":
+            "member":
+              - "abortion"
+              - "abused-drugs"
+              - "adult"
+              - "alcohol-and-tobacco"
+              - "auctions"
+              - "business-and-economy"
+              - "command-and-control"
+              - "computer-and-internet-info"
+              - "content-delivery-networks"
+              - "copyright-infringement"
+              - "cryptocurrency"
+              - "dating"
+              - "dynamic-dns"
+              - "educational-institutions"
+              - "entertainment-and-arts"
+              - "extremism"
+              - "financial-services"
+              - "gambling"
+              - "games"
+              - "government"
+              - "grayware"
+              - "hacking"
+              - "health-and-medicine"
+              - "high-risk"
+              - "home-and-garden"
+              - "hunting-and-fishing"
+              - "insufficient-content"
+              - "internet-communications-and-telephony"
+              - "internet-portals"
+              - "job-search"
+              - "legal"
+              - "low-risk"
+              - "malware"
+              - "medium-risk"
+              - "military"
+              - "motor-vehicles"
+              - "music"
+              - "newly-registered-domain"
+              - "news"
+              - "not-resolved"
+              - "nudity"
+              - "online-storage-and-backup"
+              - "parked"
+          "continue":
+            "member":
+              - "peer-to-peer"
+              - "personal-sites-and-blogs"
+              - "philosophy-and-political-advocacy"
+              - "phishing"
+              - "private-ip-addresses"
+              - "proxy-avoidance-and-anonymizers"
+              - "questionable"
+              - "real-estate"
+              - "real-time-detection"
+              - "recreation-and-hobbies"
+              - "reference-and-research"
+              - "religion"
+              - "search-engines"
+              - "sex-education"
+              - "shareware-and-freeware"
+              - "shopping"
+              - "social-networking"
+              - "society"
+              - "sports"
+              - "stock-advice-and-tools"
+              - "streaming-media"
+              - "swimsuits-and-intimate-apparel"
+              - "training-and-tools"
+              - "translation"
+              - "travel"
+              - "unknown"
+              - "weapons"
+              - "web-advertisements"
+              - "web-based-email"
+              - "web-hosting"
+          "log-severity": "critical"
+          "mode":
+            "ip-user": null
+      ignore_errors: yes
+    
+
+
+    - name: Debug 6.19 - Ensure that user cred submission uses action of block or continue on URL categories
+      debug:
+        msg: >
+          {{
+          '6.19 - Ensure that user cred submission uses action of block or continue on URL categories is COMPLIED' if
+          (
+            urlprofile.failed == false and
+            expected_alert == urlprofilestdout['entry']['credential-enforcement']
+          )
+          else '6.19 - Ensure that user cred submission uses action of block or continue on URL categories is NOT COMPLIED!!!'
+          }}
+
+
+    - name: 7.1 - Show zone policy
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='Zone Security Policy']
+        cmd: 'show'
+      register: zonepolicy
+      ignore_errors: yes
+
+    - name: 7.1 - zonepolicy to json
+      set_fact:
+        zonepolicystdout: "{{ (zonepolicy.stdout | trim | from_json) if zonepolicy.stdout is string else zonepolicy.stdout }}"
+      ignore_errors: yes
+    
+    - debug: msg="{{ zonepolicystdout }}"
+      ignore_errors: yes
+
+    - name: 7.1 - Ensure app security policy exist when allowing traffic from untrusted zone to a trusted zone
+      debug:
+        msg: >
+          {{
+          '7.1 - Ensure app security policy exist when allowing traffic from untrusted zone to a trusted zone is COMPLIANT' if
+          (
+            zonepolicy.failed == false and
+            zonepolicystdout['entry']['application']['member'] == '1c-enterprise' and
+            zonepolicystdout['entry']['category']['member'] == 'any' and
+            zonepolicystdout['entry']['destination']['member'] == 'any' and
+            zonepolicystdout['entry']['destination-hip']['member'] == 'any' and
+            zonepolicystdout['entry']['from']['member'] == 'any' and
+            zonepolicystdout['entry']['service']['member'] == 'application-default' and
+            zonepolicystdout['entry']['source']['member'] == 'any' and
+            zonepolicystdout['entry']['source-hip']['member'] == 'any' and
+            zonepolicystdout['entry']['source-user']['member'] == 'any' and
+            zonepolicystdout['entry']['to']['member'] == 'DMZ'
+          )
+          else '7.1 - Ensure app security policy exist when allowing traffic from untrusted zone to a trusted zone is NOT COMPLIANT!!!'
+          }}
+
+    - name: 7.2 - Service setting of any in a security policy allowing traffic does not exist
+      debug:
+        msg: >
+          {{
+          '7.2 - Service setting of any in a security policy allowing traffic does not exist is COMPLIANT' if
+          (
+            zonepolicy.failed == false and
+            zonepolicystdout['entry']['service']['member'] == 'application-default'     
+          )
+          else '7.2 - Service setting of any in a security policy allowing traffic does not existis NOT COMPLIANT!!!'
+          }}
+
+    - name: 7.3 - Show DenyToMaliciousIP Policy
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='Deny to Malicious IP']
+        cmd: 'show'
+      register: DenyToMaliciousIP
+      ignore_errors: yes
+
+    - name: 7.3 - Show DenyFromMaliciousIP Policy
+      panos_type_cmd:
+        provider: '{{ provider }}'
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /vsys/entry[@name='vsys1']
+          /rulebase/security/rules/entry[@name='Deny from Malicious IP']
+        cmd: 'show'
+      register: DenyFromMaliciousIP
+      ignore_errors: yes
+
+    
+    - name: 7.3 - DenyToMaliciousIP to json
+      set_fact:
+        DenyToMaliciousIPstdout: "{{ (DenyToMaliciousIP.stdout | trim | from_json) if DenyToMaliciousIP.stdout is string else DenyToMaliciousIP.stdout }}"
+      ignore_errors: yes
+
+    - name: 7.3 - zonepolicy to json
+      set_fact:
+        DenyFromMaliciousIPstdout: "{{ (DenyFromMaliciousIP.stdout | trim | from_json) if DenyFromMaliciousIP.stdout is string else DenyFromMaliciousIP.stdout }}"
+      ignore_errors: yes
+    
+    - debug: msg="{{ DenyToMaliciousIPstdout }}"
+      ignore_errors: yes
+
+    - debug: msg="{{ DenyFromMaliciousIPstdout }}"
+      ignore_errors: yes
+
+    
+    - name: 7.3 - Check if DenyToMaliciousIPstdout is compliant
+      debug:
+        msg: >
+          {{
+          'COMPLIED' if
+          (
+            DenyToMaliciousIP.failed == false and
+            DenyToMaliciousIPstdout['entry']['application']['member'] == 'any' and
+            DenyToMaliciousIPstdout['entry']['category']['member'] == 'any' and
+            DenyToMaliciousIPstdout['entry']['destination']['member'] == 'Palo Alto Networks-Known malicious IP addresses' and
+            DenyToMaliciousIPstdout['entry']['from']['member'] == 'any' and
+            DenyToMaliciousIPstdout['entry']['service']['member'] == 'any' and
+            DenyToMaliciousIPstdout['entry']['source']['member'] == 'any' and
+            DenyToMaliciousIPstdout['entry']['source-user']['member'] == 'any' and
+            DenyToMaliciousIPstdout['entry']['to']['member'] == 'any'
+          )
+          else 'NOTCOMPLIANT'
+          }}
+      register: compliant1
+      ignore_errors: yes
+
+    - name: 7.3 - Check if DenyFromMaliciousIPstdout is compliant
+      debug:
+        msg: >
+          {{
+          'COMPLIED' if
+          (
+            DenyFromMaliciousIP.failed == false and
+            DenyFromMaliciousIPstdout['entry']['application']['member'] == 'any' and
+            DenyFromMaliciousIPstdout['entry']['category']['member'] == 'any' and
+            DenyFromMaliciousIPstdout['entry']['destination']['member'] == 'any' and
+            DenyFromMaliciousIPstdout['entry']['from']['member'] == 'any' and
+            DenyFromMaliciousIPstdout['entry']['service']['member'] == 'any' and
+            DenyFromMaliciousIPstdout['entry']['source']['member'] == 'Palo Alto Networks-Known malicious IP addresses' and
+            DenyFromMaliciousIPstdout['entry']['source-user']['member'] == 'any' and
+            DenyFromMaliciousIPstdout['entry']['to']['member'] == 'any'
+          )
+          else 'NOTCOMPLIANT'
+          }}
+      register: compliant2
+      ignore_errors: yes
+
+    - name: 7.3 - Ensure security policy deny any/all traffic to/from IP address on Trusted threat intelligence sources exists
+      debug:
+        msg: >
+          {{
+          '7.3 - Ensure security policy deny any/all traffic to/from IP address on Trusted threat intelligence sources exists is COMPLIED' if
+          (
+            'COMPLIED' in compliant2.msg and
+            'COMPLIED' in compliant1.msg
+          )
+          else '7.3 - Ensure security policy deny any/all traffic to/from IP address on Trusted threat intelligence sources exists is NOT COMPLIED!!!'
+          }}
