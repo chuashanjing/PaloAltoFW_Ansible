@@ -1,4 +1,4 @@
-# CIS Benchmark Configuration for PaloAlto Firewall using Ansible
+### CIS Benchmark Configuration for PaloAlto Firewall using Ansible
 
 Note:
 CyberArk is implemented for Ansible Vault to make it secure.
